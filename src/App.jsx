@@ -1,120 +1,73 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 
-const VIDEO_URL = 'https://designerstephen.github.io/public-assets/videos/observe-hero.mp4';
+const VIDEO = 'https://designerstephen.github.io/public-assets/videos/observe-hero.mp4';
+const NAV = [['dashboard','⌂','Dashboard'],['incoming','↓','Surat Masuk'],['outgoing','↑','Surat Keluar'],['schedule','◷','Jadwal Pak Muchsin']];
+const EMPTY_IN = { tanggal_terima:'', terima_dari:'', tanggal_surat:'', nomor_surat:'', perihal:'', ditujukan_kepada:'', lampiran:'', kode:'' };
+const EMPTY_OUT = { tanggal:'', nomor_surat:'', dari:'', diterima:'', kepada:'', perihal:'', lampiran:'', kode:'' };
+const EMPTY_SCH = { tanggal:'', jam:'', kegiatan:'', lokasi:'', keterangan:'' };
 
-export default function App() {
-  const [session, setSession] = useState(null);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+const date = v => v ? new Intl.DateTimeFormat('id-ID',{day:'2-digit',month:'short',year:'numeric'}).format(new Date(v+'T00:00:00')) : '—';
+const time = v => v ? v.slice(0,5) : '—';
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+function Glass({className='',children}) { return <div className={'glass '+className}>{children}</div> }
+function Field({label,value,onChange,type='text',required=false,wide=false}) { return <label className={wide?'field wide':'field'}><span>{label}</span>{type==='textarea'?<textarea value={value||''} onChange={e=>onChange(e.target.value)} required={required}/>:<input type={type} value={value||''} onChange={e=>onChange(e.target.value)} required={required}/>}</label> }
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession);
-    });
+export default function App(){
+ const [session,setSession]=useState(null),[profile,setProfile]=useState(null),[view,setView]=useState('dashboard');
+ const [email,setEmail]=useState(''),[password,setPassword]=useState(''),[loginError,setLoginError]=useState(''),[loginBusy,setLoginBusy]=useState(false);
+ const [incoming,setIncoming]=useState([]),[outgoing,setOutgoing]=useState([]),[schedules,setSchedules]=useState([]),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const [modal,setModal]=useState(null),[form,setForm]=useState({});
+ const [search,setSearch]=useState(''),[month,setMonth]=useState('');
 
-    return () => listener.subscription.unsubscribe();
-  }, []);
-
-  async function handleLogin(event) {
-    event.preventDefault();
-    setLoading(true);
-    setError('');
-
-    const { error: loginError } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
-
-    if (loginError) setError('Email atau password tidak sesuai.');
-    setLoading(false);
-  }
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-  }
-
-  if (session) {
-    return (
-      <main className="app-shell">
-        <video className="background-video" src={VIDEO_URL} muted autoPlay loop playsInline preload="auto" />
-        <div className="scene-overlay" />
-        <section className="authenticated-panel glass-panel">
-          <div className="brand-mark">MMR</div>
-          <p className="eyebrow">MOHAMMAD MUCHSIN & REKAN</p>
-          <h1>Office is ready.</h1>
-          <p className="muted">Login berhasil. Dashboard OSS MMR akan dibangun di ruang ini.</p>
-          <button className="primary-button" onClick={handleLogout}>Keluar</button>
-        </section>
-      </main>
-    );
-  }
-
-  return (
-    <main className="app-shell">
-      <video className="background-video" src={VIDEO_URL} muted autoPlay loop playsInline preload="auto" />
-      <div className="scene-overlay" />
-
-      <nav className="top-nav glass-panel">
-        <div className="brand-lockup">
-          <span className="brand-symbol">MM</span>
-          <span>MMR OFFICE</span>
-        </div>
-        <span className="nav-status">INTERNAL OFFICE SYSTEM</span>
-      </nav>
-
-      <section className="login-wrap">
-        <div className="login-copy">
-          <p className="eyebrow">MOHAMMAD MUCHSIN & REKAN</p>
-          <h1>Enter the<br /><em>office.</em></h1>
-          <p className="subcopy">Sistem administrasi internal untuk mengelola surat dan agenda kantor.</p>
-        </div>
-
-        <form className="login-card glass-panel" onSubmit={handleLogin}>
-          <div>
-            <p className="form-label">ACCESS</p>
-            <h2>Sign in</h2>
-          </div>
-
-          <label>
-            Email
-            <input
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="nama@kantor.com"
-              autoComplete="email"
-              required
-            />
-          </label>
-
-          <label>
-            Password
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="••••••••"
-              autoComplete="current-password"
-              required
-            />
-          </label>
-
-          {error && <p className="error-message">{error}</p>}
-
-          <button className="primary-button" type="submit" disabled={loading}>
-            {loading ? 'Memverifikasi…' : 'Masuk ke Office'}
-          </button>
-
-          <p className="security-note">Akses terbatas untuk pengguna internal MMR.</p>
-        </form>
-      </section>
-
-      <footer className="bottom-note">PRIVATE · MMR OFFICE · ADMINISTRATION</footer>
-    </main>
-  );
+ async function load(){
+   setBusy(true); setError('');
+   const [a,b,c]=await Promise.all([
+    supabase.from('incoming_letters').select('*').order('register_no',{ascending:true}),
+    supabase.from('outgoing_letters').select('*').order('register_no',{ascending:true}),
+    supabase.from('schedules').select('*').order('tanggal',{ascending:true}).order('jam',{ascending:true})
+   ]);
+   const e=a.error||b.error||c.error; if(e)setError(e.message);
+   setIncoming(a.data||[]);setOutgoing(b.data||[]);setSchedules(c.data||[]);setBusy(false);
+ }
+ useEffect(()=>{
+   supabase.auth.getSession().then(async({data})=>{setSession(data.session);if(data.session){const p=await supabase.from('profiles').select('*').eq('id',data.session.user.id).maybeSingle();setProfile(p.data);await load();}});
+   const {data:{subscription}}=supabase.auth.onAuthStateChange((_e,s)=>{setSession(s);if(!s){setProfile(null);setIncoming([]);setOutgoing([]);setSchedules([])}});
+   return()=>subscription.unsubscribe();
+ },[]);
+ async function login(e){e.preventDefault();setLoginBusy(true);setLoginError('');const {error}=await supabase.auth.signInWithPassword({email:email.trim(),password});if(error)setLoginError('Email atau password tidak sesuai.');setLoginBusy(false)}
+ async function logout(){await supabase.auth.signOut();setView('dashboard')}
+ function open(type,row=null){setModal({type,row});setForm(row?{...row}:type==='incoming'?{...EMPTY_IN}:type==='outgoing'?{...EMPTY_OUT}:{...EMPTY_SCH})}
+ async function save(e){e.preventDefault();setBusy(true);const table=modal.type==='incoming'?'incoming_letters':modal.type==='outgoing'?'outgoing_letters':'schedules';const payload={...form};delete payload.id;delete payload.register_no;delete payload.created_at;delete payload.updated_at;let q=modal.row?supabase.from(table).update(payload).eq('id',modal.row.id):supabase.from(table).insert(payload);const {error:e2}=await q;if(e2)setError(e2.message);else{setModal(null);await load()}setBusy(false)}
+ async function remove(table,id){if(!confirm('Hapus data ini?'))return;const {error:e}=await supabase.from(table).delete().eq('id',id);if(e)setError(e.message);else load()}
+ function exportExcel(rows,type){const incomingType=type==='incoming';const data=rows.map(r=>incomingType?{'No':r.register_no,'Tanggal Terima':r.tanggal_terima||'','Terima dari':r.terima_dari||'','Tanggal dan No. Surat':[r.tanggal_surat,r.nomor_surat].filter(Boolean).join(' / '),'Perihal':r.perihal||'','Dit. Kpd.':r.ditujukan_kepada||'','Lamp':r.lampiran||'','Kode':r.kode||''}:{'No':r.register_no,'Tanggal':r.tanggal||'','Nomor Surat':r.nomor_surat||'','Dari':r.dari||'','Diterima':r.diterima||'','Kepada':r.kepada||'','Perihal':r.perihal||'','Lampiran':r.lampiran||'','Kode':r.kode||''});const ws=XLSX.utils.json_to_sheet(data);ws['!cols']=(incomingType?[8,16,26,28,42,28,16,12]:[8,16,28,24,18,28,42,16,12]).map(w=>({wch:w}));const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,incomingType?'Surat Masuk':'Surat Keluar');XLSX.writeFile(wb,incomingType?'Register_Surat_Masuk.xlsx':'Register_Surat_Keluar.xlsx')}
+ const name=profile?.full_name||session?.user?.email?.split('@')[0]||'Pengguna';
+ const today=new Date().toISOString().slice(0,10),todaySchedule=schedules.filter(x=>x.tanggal===today);
+ const filteredIn=useMemo(()=>incoming.filter(r=>(!month||r.tanggal_terima?.startsWith(month))&&(!search||[r.terima_dari,r.nomor_surat,r.perihal,r.ditujukan_kepada,r.kode].join(' ').toLowerCase().includes(search.toLowerCase()))),[incoming,month,search]);
+ const filteredOut=useMemo(()=>outgoing.filter(r=>(!month||r.tanggal?.startsWith(month))&&(!search||[r.dari,r.nomor_surat,r.kepada,r.perihal,r.kode].join(' ').toLowerCase().includes(search.toLowerCase()))),[outgoing,month,search]);
+ if(!session)return <Login email={email} setEmail={setEmail} password={password} setPassword={setPassword} busy={loginBusy} error={loginError} onSubmit={login}/>;
+ return <main className="dashboard"><video src={VIDEO} className="bg-video" muted autoPlay loop playsInline/><div className="veil"/><div className="layout">
+   <aside><Glass className="sidebar"><div><div className="brand"><b>MM</b><div><strong>MMR OFFICE</strong><small>ADMINISTRATION</small></div></div><nav>{NAV.map(([k,icon,label])=><button className={view===k?'active':''} onClick={()=>{setView(k);setSearch('');setMonth('');setError('')}} key={k}><i>{icon}</i>{label}</button>)}</nav></div><div className="user"><span>{name[0].toUpperCase()}</span><div><b>{name}</b><small>Internal User</small></div><button onClick={logout}>Keluar</button></div></Glass></aside>
+   <section className="workspace"><header><div><p>MMR OFFICE · OSS V1</p><h1>{NAV.find(x=>x[0]===view)?.[2]}</h1></div><button className="ghost" onClick={load}>{busy?'Memuat…':'Refresh'}</button></header>{error&&<div className="error">{error}</div>}
+   {view==='dashboard'&&<Dashboard name={name} incoming={incoming} outgoing={outgoing} today={todaySchedule} add={open}/>} 
+   {view==='incoming'&&<Letters title="Surat Masuk" rows={filteredIn} incoming search={search} setSearch={setSearch} month={month} setMonth={setMonth} add={()=>open('incoming')} edit={r=>open('incoming',r)} del={id=>remove('incoming_letters',id)} export={()=>exportExcel(filteredIn,'incoming')}/>} 
+   {view==='outgoing'&&<Letters title="Surat Keluar" rows={filteredOut} search={search} setSearch={setSearch} month={month} setMonth={setMonth} add={()=>open('outgoing')} edit={r=>open('outgoing',r)} del={id=>remove('outgoing_letters',id)} export={()=>exportExcel(filteredOut,'outgoing')}/>} 
+   {view==='schedule'&&<Schedule rows={schedules} add={()=>open('schedule')} edit={r=>open('schedule',r)} del={id=>remove('schedules',id)}/>} 
+   </section></div>
+   {modal&&<Modal title={(modal.row?'Edit ':'Tambah ')+(modal.type==='incoming'?'Surat Masuk':modal.type==='outgoing'?'Surat Keluar':'Jadwal')} close={()=>setModal(null)}><form onSubmit={save} className="form-grid">
+    {modal.type==='incoming'&&<><Field label="Tanggal Terima" type="date" value={form.tanggal_terima} onChange={v=>setForm({...form,tanggal_terima:v})} required/><Field label="Terima Dari" value={form.terima_dari} onChange={v=>setForm({...form,terima_dari:v})} required/><Field label="Tanggal Surat" type="date" value={form.tanggal_surat} onChange={v=>setForm({...form,tanggal_surat:v})}/><Field label="Nomor Surat" value={form.nomor_surat} onChange={v=>setForm({...form,nomor_surat:v})}/><Field label="Perihal" type="textarea" wide value={form.perihal} onChange={v=>setForm({...form,perihal:v})} required/><Field label="Ditujukan Kepada" value={form.ditujukan_kepada} onChange={v=>setForm({...form,ditujukan_kepada:v})}/><Field label="Lampiran" value={form.lampiran} onChange={v=>setForm({...form,lampiran:v})}/><Field label="Kode" value={form.kode} onChange={v=>setForm({...form,kode:v})}/></>}
+    {modal.type==='outgoing'&&<><Field label="Tanggal" type="date" value={form.tanggal} onChange={v=>setForm({...form,tanggal:v})} required/><Field label="Nomor Surat" value={form.nomor_surat} onChange={v=>setForm({...form,nomor_surat:v})}/><Field label="Dari" value={form.dari} onChange={v=>setForm({...form,dari:v})}/><Field label="Diterima" value={form.diterima} onChange={v=>setForm({...form,diterima:v})}/><Field label="Kepada" value={form.kepada} onChange={v=>setForm({...form,kepada:v})}/><Field label="Perihal" type="textarea" wide value={form.perihal} onChange={v=>setForm({...form,perihal:v})} required/><Field label="Lampiran" value={form.lampiran} onChange={v=>setForm({...form,lampiran:v})}/><Field label="Kode" value={form.kode} onChange={v=>setForm({...form,kode:v})}/></>}
+    {modal.type==='schedule'&&<><Field label="Tanggal" type="date" value={form.tanggal} onChange={v=>setForm({...form,tanggal:v})} required/><Field label="Jam" type="time" value={form.jam} onChange={v=>setForm({...form,jam:v})}/><Field label="Kegiatan" value={form.kegiatan} onChange={v=>setForm({...form,kegiatan:v})} required/><Field label="Lokasi" value={form.lokasi} onChange={v=>setForm({...form,lokasi:v})}/><Field label="Keterangan" type="textarea" wide value={form.keterangan} onChange={v=>setForm({...form,keterangan:v})}/></>}
+    <div className="form-actions"><button type="button" className="secondary" onClick={()=>setModal(null)}>Batal</button><button className="primary" disabled={busy}>{busy?'Menyimpan…':'Simpan'}</button></div>
+   </form></Modal>}
+ </main>
 }
+
+function Login({email,setEmail,password,setPassword,busy,error,onSubmit}){return <main className="login"><video src={VIDEO} className="bg-video" muted autoPlay loop playsInline/><div className="veil"/><nav className="login-nav"><span>MMR OFFICE</span><small>INTERNAL OFFICE SYSTEM</small></nav><section><div className="login-copy"><p>MOHAMMAD MUCHSIN & REKAN</p><h1>Enter the<br/><em>office.</em></h1><span>Sistem administrasi internal untuk mengelola surat dan agenda kantor.</span></div><Glass className="login-card"><p>ACCESS</p><h2>Sign in</h2><form onSubmit={onSubmit}><Field label="Email" value={email} onChange={setEmail} required/><Field label="Password" type="password" value={password} onChange={setPassword} required/>{error&&<div className="login-error">{error}</div>}<button className="primary" disabled={busy}>{busy?'Memverifikasi…':'Masuk ke Office'}</button></form><small>Akses terbatas untuk pengguna internal MMR.</small></Glass></section><footer>PRIVATE · MMR OFFICE · ADMINISTRATION</footer></main>}
+function Dashboard({name,incoming,outgoing,today,add}){return <div className="stack"><Glass className="welcome"><div><p>TODAY'S COMMAND CENTER</p><h2>Good morning,<br/><em>{name}.</em></h2><span>Semua administrasi kantor dalam satu ruang.</span></div><b>MMR<br/>OFFICE</b></Glass><div className="stats"><Stat label="Surat Masuk" value={incoming.length}/><Stat label="Surat Keluar" value={outgoing.length}/><Stat label="Agenda Hari Ini" value={today.length}/></div><div className="columns"><Glass className="card"><div className="card-head"><div><p>AGENDA</p><h3>Hari ini</h3></div><button className="link" onClick={()=>add('schedule')}>+ Tambah</button></div>{today.length?today.map(r=><div className="agenda" key={r.id}><time>{time(r.jam)}</time><div><b>{r.kegiatan}</b><span>{r.lokasi||'Lokasi belum diisi'}</span></div></div>):<Empty text="Belum ada agenda hari ini."/>}</Glass><Glass className="card"><div className="card-head"><div><p>REGISTER</p><h3>Quick action</h3></div></div><div className="quick"><button onClick={()=>add('incoming')}>↓ <span>Tambah Surat Masuk</span></button><button onClick={()=>add('outgoing')}>↑ <span>Tambah Surat Keluar</span></button><button onClick={()=>add('schedule')}>◷ <span>Tambah Jadwal</span></button></div></Glass></div></div>}
+function Stat({label,value}){return <Glass className="stat"><span>{label}</span><b>{value}</b><small>total register</small></Glass>}
+function Letters({title,rows,incoming,search,setSearch,month,setMonth,add,edit,del,export:onExport}){return <div className="stack"><Glass className="toolbar"><div><p>REGISTER</p><h2>{title}</h2></div><div className="toolbar-actions"><input placeholder="Cari…" value={search} onChange={e=>setSearch(e.target.value)}/><input type="month" value={month} onChange={e=>setMonth(e.target.value)}/><button className="secondary" onClick={onExport}>↓ Excel</button><button className="primary" onClick={add}>+ Tambah</button></div></Glass><Glass className="table-card"><div className="table-scroll"><table><thead><tr>{(incoming?['No','Tgl Terima','Terima Dari','Tgl & No. Surat','Perihal','Dit. Kpd.','Lamp','Kode']:['No','Tanggal','Nomor Surat','Dari','Diterima','Kepada','Perihal','Lampiran','Kode']).map(x=><th key={x}>{x}</th>)}<th/></tr></thead><tbody>{rows.length?rows.map(r=><tr key={r.id}>{incoming?<><td>{r.register_no}</td><td>{date(r.tanggal_terima)}</td><td>{r.terima_dari}</td><td>{[r.tanggal_surat?date(r.tanggal_surat):'',r.nomor_surat].filter(Boolean).join(' · ')||'—'}</td><td>{r.perihal}</td><td>{r.ditujukan_kepada||'—'}</td><td>{r.lampiran||'—'}</td><td>{r.kode||'—'}</td></>:<><td>{r.register_no}</td><td>{date(r.tanggal)}</td><td>{r.nomor_surat||'—'}</td><td>{r.dari||'—'}</td><td>{r.diterima||'—'}</td><td>{r.kepada||'—'}</td><td>{r.perihal}</td><td>{r.lampiran||'—'}</td><td>{r.kode||'—'}</td></>}<td><button className="row" onClick={()=>edit(r)}>Edit</button><button className="row danger" onClick={()=>del(r.id)}>Hapus</button></td></tr>):<tr><td colSpan={incoming?9:10}><Empty text="Belum ada data register."/></td></tr>}</tbody></table></div><div className="table-foot">{rows.length} data ditampilkan</div></Glass></div>}
+function Schedule({rows,add,edit,del}){return <div className="stack"><Glass className="toolbar"><div><p>CALENDAR</p><h2>Jadwal Pak Muchsin</h2></div><button className="primary" onClick={add}>+ Tambah Jadwal</button></Glass><div className="schedule-list">{rows.length?rows.map(r=><Glass className="schedule" key={r.id}><div><span>{date(r.tanggal)}</span><b>{time(r.jam)}</b></div><article><h3>{r.kegiatan}</h3><span>{r.lokasi||'Lokasi belum diisi'}</span>{r.keterangan&&<p>{r.keterangan}</p>}</article><div><button className="row" onClick={()=>edit(r)}>Edit</button><button className="row danger" onClick={()=>del(r.id)}>Hapus</button></div></Glass>):<Glass className="empty-large">Belum ada jadwal.</Glass>}</div></div>}
+function Empty({text}){return <div className="empty">{text}</div>}
+function Modal({title,close,children}){return <div className="modal-bg"><Glass className="modal"><div className="modal-head"><div><p>DATA ENTRY</p><h3>{title}</h3></div><button className="close" onClick={close}>×</button></div>{children}</Glass></div>}
